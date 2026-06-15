@@ -14,6 +14,7 @@ from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
 from gsheets import get_sub_info
 from media_utils import edit_step_photo, send_step_photo
+from playwright_utils import safe_scroll as _safe_scroll
 
 import traceback
 from telebot.apihelper import ApiTelegramException
@@ -369,12 +370,13 @@ def register_house_handlers(bot):
     @bot.callback_query_handler(func=lambda call: call.data == "house_to_city")
     def back_to_city(call):
         bot.answer_callback_query(call.id)
+        category = current_category.get(call.message.chat.id, "house")
         send_step_photo(
             bot,
             call.message.chat.id,
             "city.png",
-            city_caption("house"),
-            reply_markup=build_city_markup("house"),
+            city_caption(category),
+            reply_markup=build_city_markup(category),
             parse_mode="Markdown",
         )
 
@@ -750,7 +752,7 @@ def register_house_handlers(bot):
 
                     # легкий скрол
                     for _ in range(3):
-                        page.mouse.wheel(0, 1200)
+                        _safe_scroll(page, 1200)
                         page.wait_for_timeout(140 + random.randint(0, 60))
 
                     host = (page.url.split("/")[2] if "://" in page.url else "").lower()
@@ -905,7 +907,14 @@ def register_house_handlers(bot):
             types.InlineKeyboardButton("🔄 Оновити параметри", callback_data="house_search")
         )
 
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+        send_step_photo(
+            bot,
+            chat_id,
+            "results_found.jpg",
+            text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
 
     # Оновити параметри пошуку
     def house_update_parameters_menu(chat_id):
@@ -1059,7 +1068,7 @@ def register_house_handlers(bot):
                 page.goto(url, timeout=15000, wait_until="domcontentloaded")
                 accept_cookies(page)
                 for _ in range(3):
-                    page.mouse.wheel(0, 1200)
+                    _safe_scroll(page, 1200)
                     page.wait_for_timeout(250)
 
                 return _collect_olx_images(page, limit)
@@ -1267,7 +1276,7 @@ def register_house_handlers(bot):
         except Exception as e:
             print("[HOUSE][FATAL] _do_house_search_and_send:", e, traceback.format_exc())
             try:
-                safe_send_message(chat_id, f"❌ Помилка під час пошуку: {e}")
+                safe_send_message(chat_id, "❌ Пошук тимчасово не вдався. Спробуй ще раз за хвилину або обери інші параметри.")
             except Exception:
                 pass
             user_loading_status[chat_id] = False

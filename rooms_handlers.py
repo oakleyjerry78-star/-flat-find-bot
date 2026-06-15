@@ -13,6 +13,7 @@ from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
 from gsheets import get_sub_info
 from media_utils import edit_step_photo, send_step_photo
+from playwright_utils import safe_scroll as _safe_scroll
 
 
 
@@ -501,7 +502,7 @@ def register_rooms_handlers(bot):
                     pass
             # трохи прокрутки щоб дорендерився банер
             for _ in range(3):
-                page.mouse.wheel(0, 1200)
+                _safe_scroll(page, 1200)
                 page.wait_for_timeout(120 + random.randint(0, 80))
             try:
                 page.wait_for_function(
@@ -650,7 +651,14 @@ def register_rooms_handlers(bot):
             types.InlineKeyboardButton("🔄 Оновити параметри", callback_data="rooms_restart_search")
         )
 
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+        send_step_photo(
+            bot,
+            chat_id,
+            "results_found.jpg",
+            text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
 
     #Оновити параметри пошуку
     def show_update_parameters_menu(chat_id):
@@ -747,7 +755,8 @@ def register_rooms_handlers(bot):
                 _do_search_and_send(chat_id, loading_msg.message_id if loading_msg else None,
                                     force_category=force_category)
             except Exception as e:
-                safe_send_message(chat_id, f"❌ Помилка під час пошуку: {e}")
+                print(f"[ROOM_SEARCH_THREAD][ERROR] {e}")
+                safe_send_message(chat_id, "❌ Пошук тимчасово не вдався. Спробуй ще раз за хвилину або обери інші параметри.")
 
         threading.Thread(target=_runner, daemon=True).start()
 
@@ -864,7 +873,8 @@ def register_rooms_handlers(bot):
             threading.Thread(target=background_parse, args=(q, chat_id), daemon=True).start()
 
         except Exception as e:
-            safe_send_message(chat_id, f"❌ Помилка під час пошуку: {e}")
+            print(f"[ROOM_SEARCH][ERROR] {e}")
+            safe_send_message(chat_id, "❌ Пошук тимчасово не вдався. Спробуй ще раз за хвилину або обери інші параметри.")
             user_loading_status[chat_id] = False
         finally:
             if loading_msg_id:

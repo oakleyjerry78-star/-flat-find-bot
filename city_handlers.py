@@ -967,7 +967,14 @@ def register_city_handlers(bot):
             types.InlineKeyboardButton("🔄 Оновити параметри", callback_data="restart_search"),
         )
 
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+        send_step_photo(
+            bot,
+            chat_id,
+            "results_found.jpg",
+            text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
 
     #Оновити параметри пошуку
     def show_update_parameters_menu(chat_id):
@@ -1321,7 +1328,8 @@ def register_city_handlers(bot):
             ).start()
 
         except Exception as e:
-            safe_send_message(chat_id, f"❌ Помилка під час пошуку: {e}")
+            print(f"[CITY_SEARCH][ERROR] {e}")
+            safe_send_message(chat_id, "❌ Пошук тимчасово не вдався. Спробуй ще раз за хвилину або обери інші параметри.")
             user_loading_status[chat_id] = False
         finally:
             if loading_msg_id:

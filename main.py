@@ -45,6 +45,8 @@ from listing_cache import stats as cache_stats
 from gsheets import (
     cancel_subscription_renewal, ensure_user, set_ref_from, set_subscription,
     upsert_ref_stats, get_ref_count, get_paid_count, get_sub_info, get_ref_summary,
+    payment_id_already_processed,
+    expire_old_subscriptions,
     log_payout, mark_payout_paid,  # якщо плануєш логати виплати
 )
 
@@ -81,6 +83,10 @@ def _env(name: str, default: str = "") -> str:
 
 def _price_text() -> str:
     return f"{float(_env('WAYFORPAY_PRODUCT_PRICE', str(SUBSCRIPTION_PRICE_UAH))):.2f}"
+
+
+def _price_value() -> float:
+    return float(_price_text())
 
 
 def _public_base_url() -> str:
@@ -133,6 +139,10 @@ def _payment_ready() -> bool:
     return bool(_env("WAYFORPAY_MERCHANT_ACCOUNT") and _env("WAYFORPAY_SECRET_KEY"))
 
 
+def _bot_username_for_url() -> str:
+    return BOT_USERNAME.lstrip("@")
+
+
 def _payment_form(order_reference: str) -> str:
     merchant_account = _env("WAYFORPAY_MERCHANT_ACCOUNT")
     merchant_domain = _wayforpay_domain_name()
@@ -142,7 +152,7 @@ def _payment_form(order_reference: str) -> str:
     product_name = _env("WAYFORPAY_PRODUCT_NAME", f"Підписка {BRAND_NAME} на 1 місяць")
     product_count = "1"
     product_price = amount
-    return_url = _env("WAYFORPAY_RETURN_URL", f"https://t.me/{BOT_USERNAME.lstrip('@')}")
+    return_url = _env("WAYFORPAY_RETURN_URL", f"https://t.me/{_bot_username_for_url()}")
     service_url = _wayforpay_service_url()
 
     signature = _hmac_md5([
@@ -240,16 +250,21 @@ def _wayforpay_accept_response(order_reference: str) -> dict:
     }
 
 
-def _activate_paid_subscription(user_id: str, order_reference: str) -> None:
+def _activate_paid_subscription(user_id: str, order_reference: str, payment_id: str | None = None) -> None:
+    payment_id = (payment_id or order_reference or "").strip()
+    if payment_id_already_processed(payment_id):
+        logging.info("Payment %s already processed; skipping duplicate activation", payment_id)
+        return
+
     user_sub[int(user_id)] = True
     set_subscription(
         str(user_id),
         active=True,
-        price_uah=SUBSCRIPTION_PRICE_UAH,
+        price_uah=_price_value(),
         period_text=SUBSCRIPTION_PERIOD_TEXT,
-        payment_id=order_reference,
+        payment_id=payment_id,
     )
-    upsert_ref_stats(str(user_id), payout_rate=REFERRAL_PAYOUT_RATE, default_price=SUBSCRIPTION_PRICE_UAH)
+    upsert_ref_stats(str(user_id), payout_rate=REFERRAL_PAYOUT_RATE, default_price=_price_value())
     try:
         send_step_photo(
             bot,
@@ -292,7 +307,8 @@ def wayforpay_callback():
     if payload.get("transactionStatus") == "Approved":
         user_id = _user_id_from_order_reference(order_reference)
         if user_id:
-            _activate_paid_subscription(user_id, order_reference)
+            payment_id = str(payload.get("transactionId") or payload.get("invoiceId") or order_reference)
+            _activate_paid_subscription(user_id, order_reference, payment_id)
 
     return jsonify(_wayforpay_accept_response(order_reference))
 
@@ -386,7 +402,7 @@ def start_handler(message):
         referrer_id = args[1]
         if referrer_id != user_id:
             set_ref_from(user_id, referrer_id)
-            upsert_ref_stats(referrer_id, payout_rate=REFERRAL_PAYOUT_RATE, default_price=SUBSCRIPTION_PRICE_UAH)
+            upsert_ref_stats(referrer_id, payout_rate=REFERRAL_PAYOUT_RATE, default_price=_price_value())
 
     text = (
         "🏠 *Flat Find — знайди житло без комісії*\n\n"
@@ -610,7 +626,7 @@ def back_to_main_menu(call):
 # === КНОПКА В МЕНЮ ===
 @bot.message_handler(func=lambda m: m.text == "Підписка 🔒")
 def subscription_handler(message):
-    price_text = f"{SUBSCRIPTION_PRICE_UAH:.2f}"
+    price_text = _price_text()
     caption = (
         f"🔒 <b>Підписка {BRAND_NAME}</b>\n\n"
         f"Вартість: <b>{price_text} грн/місяць</b>\n"
@@ -654,7 +670,7 @@ def subscribe_month(call):
     )
 
     kb = types.InlineKeyboardMarkup(row_width=1)
-    price_text = f"{SUBSCRIPTION_PRICE_UAH:.2f}"
+    price_text = _price_text()
     payment_url = f"{_public_base_url()}/pay/{order_reference}"
     kb.add(
         types.InlineKeyboardButton(f"💳 Оплата {price_text} грн", url=payment_url),
@@ -701,74 +717,7 @@ def cancel_subscription(call):
 
 
 
-# === ПІДТВЕРДЖЕННЯ ОПЛАТИ (тимчасово вручну) ===
-@bot.callback_query_handler(func=lambda c: c.data == "wfp_paid_confirm")
-def wfp_paid_confirm(call):
-    bot.answer_callback_query(call.id)
-    uid = call.from_user.id
-    order_ref = pending_orders.get(uid)
-
-    if not order_ref:
-        bot.send_message(call.message.chat.id, "⚠️ Немає активного платежу для перевірки. Спробуйте оформити підписку ще раз.")
-        return
-
-    bot.send_chat_action(call.message.chat.id, "typing")
-
-        # Тимчасово без реального запиту до платіжної системи.
-    approved = True
-    data = {"transactionStatus": "Approved"}
-
-    if approved:
-        user_sub[uid] = True  # локальний кеш, можна прибрати згодом
-        set_subscription(
-            str(uid),
-            active=True,
-            price_uah=SUBSCRIPTION_PRICE_UAH,
-            period_text=SUBSCRIPTION_PERIOD_TEXT,
-            payment_id="TEST-MANUAL",
-        )
-        # перевирахуємо ref_stats для реферера, якщо є
-        # знайдемо хто запросив (з users листа)
-        # швидкий варіант: просто онови весь ref_stats по цьому user_id як ref_code
-        upsert_ref_stats(str(uid), payout_rate=REFERRAL_PAYOUT_RATE, default_price=SUBSCRIPTION_PRICE_UAH)
-
-        pending_orders.pop(uid, None)
-        send_step_photo(
-            bot,
-            call.message.chat.id,
-            "success.jpg",
-            "🎉 Преміум-доступ активовано.\n\nТепер можна переглядати всі знайдені варіанти без обмежень.",
-            parse_mode="HTML",
-        )
-    else:
-        status = data.get("transactionStatus", "Очікується")
-        reason = data.get("reason", data.get("message", "—"))
-        bot.send_message(
-            call.message.chat.id,
-            f"⏳ Оплата ще не підтверджена.\nСтатус: <b>{status}</b>\nПричина: {reason}",
-            parse_mode="HTML"
-        )
-
-
-
-# --- ТЕСТ-КОМАНДИ ДЛЯ ФЕЙК-ПІДПИСКИ ---
-@bot.message_handler(commands=["sub_on"])
-def cmd_sub_on(message):
-    user_sub[message.from_user.id] = True
-    bot.reply_to(message, "✅ Підписку увімкнено (тест).")
-
-@bot.message_handler(commands=["sub_off"])
-def cmd_sub_off(message):
-    user_sub[message.from_user.id] = False
-    bot.reply_to(message, "❌ Підписку вимкнено (тест).")
-
-@bot.message_handler(commands=["my_sub"])
-def cmd_my_sub(message):
-    status = "✅ Активна" if user_sub.get(message.from_user.id) else "🔒 Неактивна"
-    bot.reply_to(message, f"Статус підписки: {status}")
-
-
-@bot.callback_query_handler(func=lambda c: c.data in {"offer_txt", "privacy_txt", "offer_docx", "offer_asice"})
+@bot.callback_query_handler(func=lambda c: c.data in {"offer_txt", "privacy_txt", "offer_docx"})
 def send_offer_docs(call):
     bot.answer_callback_query(call.id)
     try:
@@ -796,13 +745,6 @@ def send_offer_docs(call):
                     caption="📄 Договір оферти",
                     visible_file_name="Договір оферти.docx"
                 )
-        else:
-            with open("docs/offer.pdf.asice", "rb") as f:
-                safe_send(
-                    bot, "send_document",
-                    call.message.chat.id, f,
-                    caption="🔐 ASiC контейнер з КЕП для перевірки підпису"
-                )
     except FileNotFoundError:
         bot.send_message(call.message.chat.id, "⚠️ Не знайдено файл договору. Перевір, що він є у папці <code>docs/</code>.", parse_mode="HTML")
 
@@ -820,7 +762,7 @@ def saved_flats_handler(message):
 @safe_handler
 def referral_handler(message):
     user_id = str(message.from_user.id)
-    referral_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
+    referral_link = f"https://t.me/{_bot_username_for_url()}?start={user_id}"
 
     total_invited = get_ref_count(user_id)
     total_paid = get_paid_count(user_id)
@@ -910,7 +852,7 @@ def withdraw_money(call):
 def referral_back(call):
     bot.answer_callback_query(call.id)
     user_id = str(call.from_user.id)
-    referral_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
+    referral_link = f"https://t.me/{_bot_username_for_url()}?start={user_id}"
 
     invited = get_ref_count(user_id)
     paid = get_paid_count(user_id)
@@ -946,7 +888,6 @@ def get_about_us_menu():
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("📄 Договір оферти", callback_data="offer_txt"),
-        types.InlineKeyboardButton("🔐 Файл з КЕП для перевірки", callback_data="offer_asice"),
         types.InlineKeyboardButton("Політика конфіденційності 📄", callback_data="privacy_txt"),
         types.InlineKeyboardButton("FAQ ❓", url="https://telegra.ph/FAQ-Flat-Find"),
         types.InlineKeyboardButton("🔁 Повернутись назад", callback_data="back_to_menu")
@@ -1151,6 +1092,7 @@ def handle_back(message):
 
 def run_bot():
     start_background_indexer()
+    threading.Thread(target=_subscription_expiry_loop, name="subscription-expiry", daemon=True).start()
 
     # стабільний long-polling у циклі
     while True:
@@ -1173,6 +1115,17 @@ def run_bot():
         except Exception as e:
             logging.exception("Unknown polling error — retry через 5с")
             time.sleep(5)
+
+
+def _subscription_expiry_loop():
+    while True:
+        try:
+            expired = expire_old_subscriptions()
+            if expired:
+                logging.info("Expired subscriptions disabled: %s", expired)
+        except Exception:
+            logging.exception("Subscription expiry check failed")
+        time.sleep(3600)
 
 
 if __name__ == "__main__":

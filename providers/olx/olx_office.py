@@ -7,6 +7,7 @@ import random
 from typing import Any, Dict, List
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright_utils import safe_scroll as _safe_scroll
 
 # === Категорія OLX «Офіси» (оренда) ===
 PATH_CATEGORY = "nedvizhimost/kommercheskaya-nedvizhimost/arenda-kommercheskoy-nedvizhimosti/ofisy"
@@ -504,7 +505,7 @@ class OlxProviderOffice(Provider):
                     # Прокрутка, щоб підвантажились картки
                     prev = -1
                     for _ in range(10):
-                        page.mouse.wheel(0, 2000)
+                        _safe_scroll(page, 2000)
                         page.wait_for_timeout(random.randint(500, 900))
                         cur = page.locator(
                             "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
@@ -551,7 +552,7 @@ class OlxProviderOffice(Provider):
 
                             prev = -1
                             for _ in range(8):
-                                page.mouse.wheel(0, 2000)
+                                _safe_scroll(page, 2000)
                                 page.wait_for_timeout(random.randint(500, 900))
                                 cur = page.locator(
                                     "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"

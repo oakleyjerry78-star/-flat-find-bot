@@ -287,6 +287,44 @@ def get_sub_info(user_id: str) -> str | None:
     return None
 
 
+def payment_id_already_processed(payment_id: str) -> bool:
+    """Checks whether this WayForPay transaction has already activated access."""
+    payment_id = str(payment_id or "").strip()
+    if not payment_id:
+        return False
+    ws = _ws(USERS_WS)
+    for value in ws.col_values(12)[1:]:  # L = payment_id
+        if str(value).strip() == payment_id:
+            return True
+    return False
+
+
+def expire_old_subscriptions() -> int:
+    """Turns off subscriptions whose sub_expires_at date has already passed."""
+    ws = _ws(USERS_WS)
+    now_serial = _now_serial_for_sheets()
+    rows = ws.get_all_records()
+    expired_rows: list[int] = []
+    for row_idx, row in enumerate(rows, start=2):
+        if not _to_bool(row.get("subscribed", "")):
+            continue
+        expires_at = _to_float(row.get("sub_expires_at") or row.get("unsubscribed_at") or "")
+        if not expires_at:
+            raw_expires = ws.get(f"I{row_idx}")
+            expires_at = _to_float(raw_expires[0][0] if raw_expires and raw_expires[0] else "")
+        if expires_at and expires_at < now_serial:
+            expired_rows.append(row_idx)
+
+    if not expired_rows:
+        return 0
+
+    ws.spreadsheet.values_batch_update({
+        "valueInputOption": "RAW",
+        "data": [{"range": f"G{row_idx}", "values": [["FALSE"]]} for row_idx in expired_rows],
+    })
+    return len(expired_rows)
+
+
 def set_ref_from(user_id: str, referrer_id: str) -> None:
     if user_id == referrer_id:
         return
