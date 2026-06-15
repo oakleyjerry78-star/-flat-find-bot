@@ -10,13 +10,20 @@ from helpers import safe_send
 from media_utils import send_step_photo
 from city_menu import build_city_markup, city_caption, parse_city_page_callback
 from telebot import apihelper
+import hashlib
+import hmac
+import html
+import json
+import threading
 import time, logging, requests
+from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter, Retry
 from telebot import types
 import urllib.request
 import os
 import dotenv
 from dotenv import load_dotenv
+from flask import Flask, Response, jsonify, request
 
 load_dotenv()  # ← Обов'язково перед os.getenv
 logging.basicConfig(
@@ -26,7 +33,6 @@ logging.basicConfig(
 from app_config import (
     BOT_USERNAME,
     BRAND_NAME,
-    INVOICE_URL,
     REFERRAL_PAYOUT_RATE,
     REFERRAL_PAYOUT_UAH,
     SUPPORT_USERNAME,
@@ -45,6 +51,9 @@ from gsheets import (
 # === Основні словники ===
 user_sub = {}          # user_id -> bool
 pending_orders = {}    # user_id -> orderReference
+payment_orders = {}    # orderReference -> user_id
+
+web_app = Flask(__name__)
 
 # ретраї для HTTP-сесії, яку використовує pyTelegramBotAPI
 sess = apihelper._get_req_session()
@@ -64,6 +73,218 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий у .env або змінних середовища")
 
 bot = TeleBot(BOT_TOKEN)
+
+
+def _env(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
+
+
+def _price_text() -> str:
+    return f"{float(_env('WAYFORPAY_PRODUCT_PRICE', str(SUBSCRIPTION_PRICE_UAH))):.2f}"
+
+
+def _public_base_url() -> str:
+    configured = _env("WAYFORPAY_PUBLIC_BASE_URL")
+    if configured:
+        return configured.rstrip("/")
+    service_url = _env("WAYFORPAY_SERVICE_URL")
+    if service_url:
+        parsed = urlparse(service_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    railway_domain = _env("RAILWAY_PUBLIC_DOMAIN") or _env("RAILWAY_STATIC_URL")
+    if railway_domain:
+        if not railway_domain.startswith(("http://", "https://")):
+            railway_domain = "https://" + railway_domain
+        return railway_domain.rstrip("/")
+    return "https://flat-find-bot-production.up.railway.app"
+
+
+def _wayforpay_service_url() -> str:
+    return _env("WAYFORPAY_SERVICE_URL", f"{_public_base_url()}/wayforpay/callback")
+
+
+def _wayforpay_domain_name() -> str:
+    configured = _env("WAYFORPAY_MERCHANT_DOMAIN")
+    if configured:
+        return configured
+    parsed = urlparse(_public_base_url())
+    return parsed.netloc or "flat-find-bot-production.up.railway.app"
+
+
+def _hmac_md5(parts: list[str]) -> str:
+    secret = _env("WAYFORPAY_SECRET_KEY")
+    data = ";".join(str(part) for part in parts)
+    return hmac.new(secret.encode("utf-8"), data.encode("utf-8"), hashlib.md5).hexdigest()
+
+
+def _build_order_reference(user_id: int | str) -> str:
+    return f"FF-{user_id}-{int(time.time())}"
+
+
+def _user_id_from_order_reference(order_reference: str) -> str | None:
+    parts = (order_reference or "").split("-")
+    if len(parts) >= 3 and parts[0] == "FF" and parts[1].isdigit():
+        return parts[1]
+    return None
+
+
+def _payment_ready() -> bool:
+    return bool(_env("WAYFORPAY_MERCHANT_ACCOUNT") and _env("WAYFORPAY_SECRET_KEY"))
+
+
+def _payment_form(order_reference: str) -> str:
+    merchant_account = _env("WAYFORPAY_MERCHANT_ACCOUNT")
+    merchant_domain = _wayforpay_domain_name()
+    order_date = str(int(time.time()))
+    amount = _price_text()
+    currency = _env("WAYFORPAY_CURRENCY", "UAH")
+    product_name = _env("WAYFORPAY_PRODUCT_NAME", f"Підписка {BRAND_NAME} на 1 місяць")
+    product_count = "1"
+    product_price = amount
+    return_url = _env("WAYFORPAY_RETURN_URL", f"https://t.me/{BOT_USERNAME.lstrip('@')}")
+    service_url = _wayforpay_service_url()
+
+    signature = _hmac_md5([
+        merchant_account,
+        merchant_domain,
+        order_reference,
+        order_date,
+        amount,
+        currency,
+        product_name,
+        product_count,
+        product_price,
+    ])
+
+    fields = {
+        "merchantAccount": merchant_account,
+        "merchantAuthType": "SimpleSignature",
+        "merchantDomainName": merchant_domain,
+        "merchantSignature": signature,
+        "orderReference": order_reference,
+        "orderDate": order_date,
+        "amount": amount,
+        "currency": currency,
+        "productName[]": product_name,
+        "productPrice[]": product_price,
+        "productCount[]": product_count,
+        "serviceUrl": service_url,
+        "returnUrl": return_url,
+        "language": "UA",
+    }
+    inputs = "\n".join(
+        f'<input type="hidden" name="{html.escape(key)}" value="{html.escape(str(value))}">'
+        for key, value in fields.items()
+    )
+    return f"""<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Оплата {html.escape(BRAND_NAME)}</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#111d29; color:#fff; font-family:Arial,sans-serif; }}
+    button {{ padding:14px 22px; border:0; border-radius:10px; font-size:18px; font-weight:700; color:#fff; background:#7c3aed; }}
+  </style>
+</head>
+<body>
+  <form id="pay" method="post" action="https://secure.wayforpay.com/pay">
+    {inputs}
+    <button type="submit">Перейти до оплати {html.escape(amount)} грн</button>
+  </form>
+  <script>document.getElementById("pay").submit();</script>
+</body>
+</html>"""
+
+
+def _flatten_payload(data: dict) -> dict:
+    return {key: value[0] if isinstance(value, list) and value else value for key, value in data.items()}
+
+
+def _verify_wayforpay_callback(payload: dict) -> bool:
+    signature = payload.get("merchantSignature") or payload.get("signature")
+    if not signature:
+        return False
+    expected = _hmac_md5([
+        payload.get("merchantAccount", ""),
+        payload.get("orderReference", ""),
+        payload.get("amount", ""),
+        payload.get("currency", ""),
+        payload.get("authCode", ""),
+        payload.get("cardPan", ""),
+        payload.get("transactionStatus", ""),
+        payload.get("reasonCode", ""),
+    ])
+    return hmac.compare_digest(str(signature), expected)
+
+
+def _wayforpay_accept_response(order_reference: str) -> dict:
+    response_time = str(int(time.time()))
+    status = "accept"
+    return {
+        "orderReference": order_reference,
+        "status": status,
+        "time": response_time,
+        "signature": _hmac_md5([order_reference, status, response_time]),
+    }
+
+
+def _activate_paid_subscription(user_id: str, order_reference: str) -> None:
+    user_sub[int(user_id)] = True
+    set_subscription(
+        str(user_id),
+        active=True,
+        price_uah=SUBSCRIPTION_PRICE_UAH,
+        period_text=SUBSCRIPTION_PERIOD_TEXT,
+        payment_id=order_reference,
+    )
+    upsert_ref_stats(str(user_id), payout_rate=REFERRAL_PAYOUT_RATE, default_price=SUBSCRIPTION_PRICE_UAH)
+    try:
+        send_step_photo(
+            bot,
+            int(user_id),
+            "success.jpg",
+            "🎉 Преміум-доступ активовано.\n\nТепер можна переглядати всі знайдені варіанти без обмежень.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        logging.exception("Не вдалося надіслати повідомлення про успішну оплату")
+
+
+@web_app.get("/")
+def healthcheck():
+    return "Flat Find bot is running", 200
+
+
+@web_app.get("/pay/<order_reference>")
+def pay_page(order_reference: str):
+    if not _payment_ready():
+        return Response("WayForPay не налаштований", status=503)
+    return Response(_payment_form(order_reference), mimetype="text/html")
+
+
+@web_app.route("/wayforpay/callback", methods=["POST"])
+def wayforpay_callback():
+    payload = request.get_json(silent=True)
+    if not payload:
+        payload = _flatten_payload(request.form.to_dict(flat=False))
+    logging.info("[WayForPay callback] %s", json.dumps(payload, ensure_ascii=False))
+
+    order_reference = str(payload.get("orderReference", ""))
+    if not order_reference:
+        return jsonify({"status": "missing orderReference"}), 400
+
+    if not _verify_wayforpay_callback(payload):
+        logging.warning("[WayForPay callback] bad signature for %s", order_reference)
+        return jsonify({"status": "bad signature"}), 403
+
+    if payload.get("transactionStatus") == "Approved":
+        user_id = _user_id_from_order_reference(order_reference)
+        if user_id:
+            _activate_paid_subscription(user_id, order_reference)
+
+    return jsonify(_wayforpay_accept_response(order_reference))
 
 try:
     bot.set_my_description(
@@ -412,6 +633,8 @@ def subscribe_month(call):
 
     # Тимчасово зберігаємо активне замовлення
     pending_orders[uid] = {"type": "wfp_sub", "ts": int(time.time())}
+    order_reference = _build_order_reference(uid)
+    payment_orders[order_reference] = uid
     
     # Приховуємо нижнє меню
     bot.send_message(
@@ -422,9 +645,9 @@ def subscribe_month(call):
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     price_text = f"{SUBSCRIPTION_PRICE_UAH:.2f}"
+    payment_url = f"{_public_base_url()}/pay/{order_reference}"
     kb.add(
-        types.InlineKeyboardButton(f"💳 Оплата {price_text} грн", url=INVOICE_URL),
-        types.InlineKeyboardButton("✅ Активувати доступ", callback_data="wfp_paid_confirm"),
+        types.InlineKeyboardButton(f"💳 Оплата {price_text} грн", url=payment_url),
         types.InlineKeyboardButton("🔁 Головне меню", callback_data="back_to_menu")
     )
 
@@ -436,7 +659,7 @@ def subscribe_month(call):
         "✅ Купівля квартир і будинків без комісії\n"
         "✅ Місто, райони, бюджет, площа й додаткові параметри\n"
         "✅ Нові оголошення у зручному форматі карток\n\n"
-        "Натисніть кнопку нижче, щоб перейти до оплати.",
+        "Натисніть кнопку нижче, щоб перейти до оплати. Після успішної оплати доступ активується автоматично.",
         parse_mode="HTML",
         reply_markup=kb
     )
@@ -944,4 +1167,10 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    run_bot()
+    threading.Thread(target=run_bot, daemon=True).start()
+    web_app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8080")),
+        threaded=True,
+        use_reloader=False,
+    )

@@ -10,8 +10,7 @@ REFERRAL_PAYOUT_RATE = 20.0
 
 TAGLINE = f"{BRAND_NAME} - швидкий підбір житла без зайвих дзвінків і комісій."
 
-# Посилання для кнопки оплати.
-INVOICE_URL = os.getenv("INVOICE_URL", "https://t.me/yuranchik19")
+# Старий INVOICE_URL більше не використовується: оплату створює WayForPay.
 
 CITY_SLUGS = {
     "Київ": "kiev",

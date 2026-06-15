@@ -16,6 +16,23 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## WayForPay на Railway
+
+Для автоматичної оплати додай у Railway Variables:
+
+```env
+WAYFORPAY_MERCHANT_ACCOUNT=t_me_04f94
+WAYFORPAY_SECRET_KEY=...
+WAYFORPAY_MERCHANT_PASSWORD=...
+WAYFORPAY_CURRENCY=UAH
+WAYFORPAY_PRODUCT_NAME=Підписка Flat Find на 1 місяць
+WAYFORPAY_PRODUCT_PRICE=439.99
+WAYFORPAY_RETURN_URL=https://t.me/flatfind_estate_bot
+WAYFORPAY_SERVICE_URL=https://flat-find-bot-production.up.railway.app/wayforpay/callback
+```
+
+У Railway Public Networking використовуй порт `8080`.
+
 ## Стартова картка Telegram
 
 Код автоматично виставляє опис бота через Telegram API. Після натискання `Розпочати` бот надсилає тільки текст і меню, без великого фото.
@@ -46,7 +63,7 @@ media/intro.png
 
 - `Оренда без комісії` - квартири, будинки, офіси, кімнати.
 - `Купівля без комісії` - квартири й будинки через окремі категорії пошуку.
-- `Підписка` - оформлення або скасування підписки, URL оплати береться з `INVOICE_URL`.
+- `Підписка` - оформлення або скасування підписки, оплата створюється через WayForPay.
 - `Про сервіс` - опис доступу, локальні файли оферти й політики, перевірка підпису та FAQ.
 - `Партнерство` - реферальне посилання та статистика з Google Sheets.
 
