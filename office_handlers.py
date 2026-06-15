@@ -8,7 +8,7 @@ import requests
 from PIL import Image
 import re
 from providers.olx_provider import get_olx_provider
-from listing_cache import query_cards, upsert_listings
+from listing_cache import query_cards_for_query, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
 from background_indexer import enqueue_index_job
@@ -613,14 +613,19 @@ def register_office_handlers(bot):
                 )
                 print("[COUNT][OFFICE][OLX] q_olx →", q_olx)
                 enqueue_index_job("office", city)
-                olx_provider = get_olx_provider("office")
-                try:
-                    olx_url_dbg = olx_provider.build_url(q_olx, 1)
-                    print("[COUNT][OFFICE][OLX] URL:", olx_url_dbg)
-                except Exception as e:
-                    print("[COUNT][OFFICE][OLX] build_url WARN:", e)
-                olx_count = quick_count_playwright(olx_provider, q_olx, timeout_ms=6000)
-                print("[COUNT][OFFICE][OLX] found:", olx_count)
+                cached = query_cards_for_query(
+                    category="office",
+                    city=city,
+                    districts=districts,
+                    query=q_olx,
+                    limit=100,
+                )
+                if cached:
+                    user_listings[chat_id] = cached
+                    user_page[chat_id] = 0
+                    olx_count = len(cached)
+                else:
+                    olx_count = None
 
             except Exception as e:
                 print("[quick_count_playwright office] error:", e)
@@ -663,8 +668,10 @@ def register_office_handlers(bot):
             else f"Бюджет: від {budget_from} до {budget_to}"
         )
 
+        count_phrase = f"*{final_count} офісних варіантів*" if final_count else "*актуальні офісні варіанти*"
+
         text = (
-            f"🏢 *{BRAND_NAME}* знайшов *{final_count} офісних варіантів* без комісії за заданими фільтрами.\n\n"
+            f"🏢 *{BRAND_NAME}* знайшов {count_phrase} без комісії за заданими фільтрами.\n\n"
             "👀 *Хочеш переглянути їх або оновити пошук?*\n\n"
             "✅ *Твої параметри:*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -851,29 +858,25 @@ def register_office_handlers(bot):
 
             provider = get_olx_provider(category)
             print("[OFFICE_SEARCH] Провайдер:", provider)
-            cached = query_cards(
+            cached = query_cards_for_query(
                 category=category,
                 city=city,
                 districts=districts,
-                price_from=q.get("price_from"),
-                price_to=q.get("price_to"),
+                query=q,
                 limit=100,
             )
-            if not cached and districts:
-                cached = query_cards(
-                    category=category,
-                    city=city,
-                    districts=[],
-                    price_from=q.get("price_from"),
-                    price_to=q.get("price_to"),
-                    limit=100,
-                )
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
                 user_loading_status[chat_id] = False
                 send_listing_office(chat_id)
                 return
+            safe_send_message(
+                chat_id,
+                "⏳ База офісів для цих параметрів зараз оновлюється. Я поставив пошук у пріоритет — спробуй переглянути варіанти ще раз за хвилину.",
+            )
+            user_loading_status[chat_id] = False
+            return
 
             # 3) Перша сторінка
             listings_first = provider.search({**q, "max_pages": 1})

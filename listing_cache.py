@@ -148,6 +148,12 @@ def query_cards(
     districts: list[str] | None = None,
     price_from: int | None = None,
     price_to: int | None = None,
+    rooms: int | list[int] | None = None,
+    area_from: int | float | None = None,
+    area_to: int | float | None = None,
+    floor_from: int | None = None,
+    floor_to: int | None = None,
+    allows_pets: bool | None = None,
     limit: int = 300,
 ) -> list[dict[str, Any]]:
     init_db()
@@ -162,6 +168,25 @@ def query_cards(
     if price_to is not None:
         where.append("(price_uah IS NULL OR price_uah<=?)")
         params.append(price_to)
+    room_values = _as_int_list(rooms)
+    if room_values:
+        placeholders = ",".join("?" for _ in room_values)
+        where.append(f"(rooms IS NULL OR rooms IN ({placeholders}))")
+        params.extend(room_values)
+    if area_from is not None:
+        where.append("(area_total IS NULL OR area_total>=?)")
+        params.append(float(area_from))
+    if area_to is not None:
+        where.append("(area_total IS NULL OR area_total<=?)")
+        params.append(float(area_to))
+    if floor_from is not None:
+        where.append("(floor IS NULL OR floor>=?)")
+        params.append(int(floor_from))
+    if floor_to is not None:
+        where.append("(floor IS NULL OR floor<=?)")
+        params.append(int(floor_to))
+    if allows_pets is True:
+        where.append("(allows_pets IS NULL OR allows_pets=1)")
 
     sql = f"""
         SELECT * FROM listings
@@ -201,6 +226,66 @@ def query_cards(
     return out
 
 
+def query_cards_for_query(
+    *,
+    category: str,
+    city: str | None,
+    districts: list[str] | None,
+    query: dict[str, Any],
+    limit: int = 300,
+    allow_relaxed: bool = True,
+) -> list[dict[str, Any]]:
+    """Fast cached lookup with exact filters first and city-level fallback.
+
+    The bot should answer users from the local DB immediately. If the exact
+    district/parameter match is empty, we progressively relax filters inside
+    the same city while the background indexer refreshes the precise search.
+    """
+    filters = _filters_from_query(query)
+    cards = query_cards(
+        category=category,
+        city=city,
+        districts=districts,
+        limit=limit,
+        **filters,
+    )
+    if cards or not allow_relaxed:
+        return cards
+
+    if districts:
+        cards = query_cards(
+            category=category,
+            city=city,
+            districts=[],
+            limit=limit,
+            **filters,
+        )
+        if cards:
+            return cards
+
+    core_filters = {
+        "price_from": filters.get("price_from"),
+        "price_to": filters.get("price_to"),
+        "allows_pets": filters.get("allows_pets"),
+    }
+    cards = query_cards(
+        category=category,
+        city=city,
+        districts=[],
+        limit=limit,
+        **core_filters,
+    )
+    if cards:
+        return cards
+
+    return query_cards(
+        category=category,
+        city=city,
+        districts=[],
+        limit=limit,
+    )
+
+
 def stats() -> dict[str, Any]:
     init_db()
     with _LOCK, _connect() as conn:
@@ -226,6 +311,57 @@ def stats() -> dict[str, Any]:
         "by_source": {r["source"]: r["n"] for r in source_rows},
         "with_photo": {r["category"]: r["n"] for r in photo_rows},
     }
+
+
+def _filters_from_query(query: dict[str, Any]) -> dict[str, Any]:
+    area = query.get("area") if isinstance(query.get("area"), dict) else {}
+    floor = query.get("floor") if isinstance(query.get("floor"), dict) else {}
+    return {
+        "price_from": _as_int(query.get("price_from") or query.get("price_min")),
+        "price_to": _as_int(query.get("price_to") or query.get("price_max")),
+        "rooms": _rooms_from_value(query.get("rooms_label") or query.get("rooms")),
+        "area_from": _as_int(area.get("from") or query.get("area_from")),
+        "area_to": _as_int(area.get("to") or query.get("area_to")),
+        "floor_from": _as_int(floor.get("from") or query.get("floor_from")),
+        "floor_to": _as_int(floor.get("to") or query.get("floor_to")),
+        "allows_pets": query.get("allows_pets") if isinstance(query.get("allows_pets"), bool) else None,
+    }
+
+
+def _as_int(value: Any) -> int | None:
+    if value in (None, "", "—", "Не обмежено"):
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        return int(digits) if digits else None
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if value in (None, "", "—"):
+        return []
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        out: list[int] = []
+        for item in value:
+            out.extend(_rooms_from_value(item))
+        return sorted(set(out))
+    return _rooms_from_value(value)
+
+
+def _rooms_from_value(value: Any) -> list[int]:
+    if value in (None, "", "—"):
+        return []
+    text = str(value).lower()
+    if "будь" in text or "всі" in text:
+        return []
+    found = []
+    for part in (value if isinstance(value, (list, tuple, set)) else [value]):
+        digits = "".join(ch if ch.isdigit() else " " for ch in str(part)).split()
+        found.extend(int(d) for d in digits if d.isdigit())
+    return sorted(set(n for n in found if n > 0))
 
 
 def _loads(value: str | None, default: Any) -> Any:

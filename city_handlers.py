@@ -11,7 +11,7 @@ import time, requests
 from typing import Dict, List
 from search_runner import build_query_from_state_for_olx
 from gsheets import get_sub_info
-from listing_cache import query_cards, upsert_listings
+from listing_cache import query_cards_for_query, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
 from background_indexer import enqueue_index_job
@@ -972,24 +972,10 @@ def register_city_handlers(bot):
                 if cached:
                     user_listings[chat_id] = cached
                     user_page[chat_id] = 0
+                    combined_count = len(cached)
+                else:
+                    combined_count = 0
 
-                olx_provider = get_olx_provider(category)
-                print("[OLX][provider]", olx_provider.__class__.__name__)
-                print("[OLX] First OLX URL:", olx_provider.build_url(q_olx, page=1))
-                olx_count, first_items = quick_count_and_cards_playwright(olx_provider, q_olx, timeout_ms=7000)
-                if first_items:
-                    try:
-                        upsert_listings(category, city, first_items)
-                    except Exception as e:
-                        print("[quick_count cache upsert][error]", e)
-                    user_listings[chat_id] = _dedupe_cards([_to_bot_card(item) for item in first_items])
-                    user_page[chat_id] = 0
-                print(f"[OLX] Count = {olx_count}")
-
-
-
-                # --- 4) Підсумок для UI ---
-                combined_count = (olx_count or 0)
                 user_total_expected[chat_id] = combined_count
 
                 # 🆕 зберігаємо останній запит
@@ -1072,8 +1058,10 @@ def register_city_handlers(bot):
         else:
             budget_text = "Бюджет: —"
 
+        count_phrase = f"*{expected} варіантів квартир*" if expected else "*актуальні варіанти квартир*"
+
         text = (
-            f"🏠 *{BRAND_NAME}* підготував *{expected} варіантів квартир* без комісії за твоїми параметрами.\n\n"
+            f"🏠 *{BRAND_NAME}* підготував {count_phrase} без комісії за твоїми параметрами.\n\n"
             "👀 *Хочеш переглянути їх або оновити пошук?*\n\n"
             "✅ *Твої параметри:*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1198,24 +1186,13 @@ def register_city_handlers(bot):
         return wrapper
 
     def _query_cached_cards_fast(category, city, districts, q_olx, limit=100):
-        cached = query_cards(
+        return query_cards_for_query(
             category=category,
             city=city,
             districts=districts,
-            price_from=q_olx.get("price_from"),
-            price_to=q_olx.get("price_to"),
+            query=q_olx,
             limit=limit,
         )
-        if not cached and districts:
-            cached = query_cards(
-                category=category,
-                city=city,
-                districts=[],
-                price_from=q_olx.get("price_from"),
-                price_to=q_olx.get("price_to"),
-                limit=limit,
-            )
-        return cached
 
     def _prefetch_first_results(chat_id: int, q_olx: dict, category: str, city: str, districts: list):
         if user_listings.get(chat_id):
@@ -1226,14 +1203,7 @@ def register_city_handlers(bot):
             if cached:
                 user_listings[chat_id] = cached
             else:
-                provider = get_olx_provider(category)
-                _, items = quick_count_and_cards_playwright(provider, {**q_olx, "max_pages": 1}, timeout_ms=7000)
-                if items:
-                    try:
-                        upsert_listings(category, city, items)
-                    except Exception as e:
-                        print("[prefetch cache upsert][error]", e)
-                user_listings[chat_id] = _dedupe_cards([_to_bot_card(item) for item in items])
+                enqueue_index_job(category, city)
             user_page[chat_id] = 0
             if user_waiting_results.pop(chat_id, False):
                 if user_listings.get(chat_id):
@@ -1241,7 +1211,7 @@ def register_city_handlers(bot):
                 else:
                     safe_send_message(
                         chat_id,
-                        "⏳ OLX довго віддає самі оголошення. Спробуй натиснути перегляд ще раз або оновити параметри.",
+                        "⏳ База для цих параметрів оновлюється. Я поставив пошук у пріоритет — спробуй переглянути варіанти ще раз за хвилину.",
                     )
         except Exception as e:
             print(f"[PREFETCH_RESULTS][ERROR] {e}")
@@ -1321,7 +1291,14 @@ def register_city_handlers(bot):
             olx_pages = min(max(1, math.ceil(olx_count / 20)), 15)  # повільне фонове довантаження
             print(f"[OLX] found ~{olx_count}, pages={olx_pages}")
 
-            for it in (olx.search({**q_olx, "max_pages": olx_pages}) or []):
+            olx_items = olx.search({**q_olx, "max_pages": olx_pages}) or []
+            if olx_items:
+                try:
+                    upsert_listings(cat, q_olx.get("city") or user_selected_city.get(chat_id), olx_items)
+                except Exception as e:
+                    print("[background cache upsert][error]", e)
+
+            for it in olx_items:
                 price_uah = getattr(it, "price_uah", None)
                 price_txt = f"{price_uah:,} грн".replace(",", " ") if price_uah else "—"
                 card = {
@@ -1473,40 +1450,16 @@ def register_city_handlers(bot):
                 threading.Thread(target=background_parse, args=(chat_id, q_olx), daemon=True).start()
                 return
 
-            # --- 4) СИНХРОННО: по 1 сторінці з обох джерел
-            olx = get_olx_provider(category)
-
-
-            _, first_olx = quick_count_and_cards_playwright(olx, {**q_olx, "max_pages": 1}, timeout_ms=7000)
-            if first_olx:
-                try:
-                    upsert_listings(category, city, first_olx)
-                except Exception as e:
-                    print("[search cache upsert][error]", e)
-
-
-            olx_cards_all = [_to_bot_card(it) for it in first_olx]
-
-
-            # --- 5) Беремо по 5 з кожного, інтерлівінг 1:1 (допускаємо, що одне з джерел тимчасово порожнє)
-            olx_cards = olx_cards_all[:100]
-
-
-            merged = olx_cards
-            merged = _dedupe_cards(merged)  # ← ДЕДУП
-            # !!! НЕ застосовуємо apply_filters тут, бо вже фільтрували на рівні запиту
-
-            # --- 6) показати першу сторінку (кнопка "Далі" з'явиться навіть якщо <10, див. send_listing has_more)
-            user_listings[chat_id] = merged
-            user_page[chat_id] = 0
-            send_listing(chat_id)
-
-            # --- 7) ФОНОМ: догрузити решту сторінок обох джерел
+            safe_send_message(
+                chat_id,
+                "⏳ База для цих параметрів зараз оновлюється. Я вже поставив цей пошук у пріоритет — спробуй переглянути варіанти ще раз за хвилину.",
+            )
             threading.Thread(
                 target=background_parse,
                 args=(chat_id, q_olx),
                 daemon=True
             ).start()
+            return
 
         except Exception as e:
             print(f"[CITY_SEARCH][ERROR] {e}")

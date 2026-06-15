@@ -9,7 +9,7 @@ from io import BytesIO
 import requests
 from PIL import Image
 from providers.olx_provider import get_olx_provider
-from listing_cache import query_cards, upsert_listings
+from listing_cache import query_cards_for_query, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME, CITY_SLUGS
 from background_indexer import enqueue_index_job
@@ -835,8 +835,19 @@ def register_house_handlers(bot):
 
                 _debug_dump("[OLX][HOUSE] q", q_olx)
                 enqueue_index_job(category, city)
-                olx_provider = get_olx_provider(category)
-                olx_count = quick_count_playwright(olx_provider, q_olx, timeout_ms=8000)
+                cached = query_cards_for_query(
+                    category=category,
+                    city=city,
+                    districts=([] if drop_districts else selected),
+                    query=q_olx,
+                    limit=100,
+                )
+                if cached:
+                    user_listings[chat_id] = cached
+                    user_page[chat_id] = 0
+                    olx_count = len(cached)
+                else:
+                    olx_count = None
 
 
 
@@ -883,8 +894,10 @@ def register_house_handlers(bot):
             else f"Бюджет: від {budget_from} до {budget_to}"
         )
 
+        count_phrase = f"*{final_count} варіантів будинків*" if final_count else "*актуальні варіанти будинків*"
+
         text = (
-            f"🏠 *{BRAND_NAME}* підібрав *{final_count} варіантів будинків* без комісії за твоїми параметрами.\n\n"
+            f"🏠 *{BRAND_NAME}* підібрав {count_phrase} без комісії за твоїми параметрами.\n\n"
             "👀 *Хочеш переглянути їх або оновити пошук?*\n\n"
             "✅ *Твої параметри:*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1232,23 +1245,13 @@ def register_house_handlers(bot):
 
             # ---- 4) Провайдери + перші сторінки
             olx = get_olx_provider(category)
-            cached = query_cards(
+            cached = query_cards_for_query(
                 category=category,
                 city=city,
                 districts=selected,
-                price_from=q_olx.get("price_from"),
-                price_to=q_olx.get("price_to"),
+                query=q_olx,
                 limit=100,
             )
-            if not cached and selected:
-                cached = query_cards(
-                    category=category,
-                    city=city,
-                    districts=[],
-                    price_from=q_olx.get("price_from"),
-                    price_to=q_olx.get("price_to"),
-                    limit=100,
-                )
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
@@ -1259,6 +1262,17 @@ def register_house_handlers(bot):
                     daemon=True,
                 ).start()
                 return
+            safe_send_message(
+                chat_id,
+                "⏳ База будинків для цих параметрів зараз оновлюється. Я поставив пошук у пріоритет — спробуй переглянути варіанти ще раз за хвилину.",
+            )
+            threading.Thread(
+                target=background_parse_houses,
+                args=(chat_id, q_olx),
+                daemon=True,
+            ).start()
+            user_loading_status[chat_id] = False
+            return
             first_olx = olx.search({**q_olx, "max_pages": 1}) or []
             if first_olx:
                 try:

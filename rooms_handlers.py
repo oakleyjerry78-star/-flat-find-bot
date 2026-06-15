@@ -8,7 +8,7 @@ import requests
 from PIL import Image
 import re
 from providers.olx import get_olx_provider
-from listing_cache import query_cards, upsert_listings
+from listing_cache import query_cards_for_query, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
 from background_indexer import enqueue_index_job
@@ -595,14 +595,19 @@ def register_rooms_handlers(bot):
                 )
                 print("[ROOM/OLX] q_olx:", q_olx)
                 enqueue_index_job(category, city)
-                olx_provider = get_olx_provider(category)
-                try:
-                    olx_url_debug = olx_provider.build_url(q_olx, 1)
-                    print("[ROOM/OLX] URL page1:", olx_url_debug)
-                except Exception as e:
-                    print("[ROOM/OLX][WARN] build_url failed:", e)
-                olx_count = quick_count_playwright(olx_provider, q_olx, timeout_ms=6000)
-                print(f"[ROOM/OLX] quick_count = {olx_count}")
+                cached = query_cards_for_query(
+                    category=category,
+                    city=city,
+                    districts=districts,
+                    query=q_olx,
+                    limit=100,
+                )
+                if cached:
+                    user_listings[chat_id] = cached
+                    user_page[chat_id] = 0
+                    olx_count = len(cached)
+                else:
+                    olx_count = None
 
                 # ===== Підсумок (OLX only) =====
                 total = olx_count if isinstance(olx_count, int) else None
@@ -624,8 +629,7 @@ def register_rooms_handlers(bot):
 
     def show_final_summary(chat_id, count=None):
         city = user_selected_city.get(chat_id, "—")
-        # якщо quick-count не спрацював — покажемо "—"
-        count_text = str(count) if isinstance(count, int) else "—"
+        count_phrase = f"*{count} варіантів кімнат*" if isinstance(count, int) and count > 0 else "*актуальні варіанти кімнат*"
 
         districts = ", ".join(user_selected_districts.get(chat_id, [])) or "—"
         floors = ", ".join(user_selected_floors.get(chat_id, [])) or "Без обмежень"
@@ -636,7 +640,7 @@ def register_rooms_handlers(bot):
                        else f"Бюджет: від {budget_from} до {budget_to}")
 
         text = (
-            f"🛏 *{BRAND_NAME}* зібрав *{count_text} варіантів кімнат* без комісії за твоїми параметрами.\n\n"
+            f"🛏 *{BRAND_NAME}* зібрав {count_phrase} без комісії за твоїми параметрами.\n\n"
             "👀 *Хочеш переглянути їх або оновити пошук?*\n\n"
             "✅ *Твої параметри:*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -827,29 +831,25 @@ def register_rooms_handlers(bot):
                 print("[WARN] Не вдалось побудувати URL для логів:", e)
 
             print(f"[SEARCH] provider={provider.__class__.__name__}")
-            cached = query_cards(
+            cached = query_cards_for_query(
                 category=category,
                 city=city,
                 districts=districts,
-                price_from=q.get("price_from"),
-                price_to=q.get("price_to"),
+                query=q,
                 limit=100,
             )
-            if not cached and districts:
-                cached = query_cards(
-                    category=category,
-                    city=city,
-                    districts=[],
-                    price_from=q.get("price_from"),
-                    price_to=q.get("price_to"),
-                    limit=100,
-                )
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
                 user_loading_status[chat_id] = False
                 send_listing(chat_id)
                 return
+            safe_send_message(
+                chat_id,
+                "⏳ База кімнат для цих параметрів зараз оновлюється. Я поставив пошук у пріоритет — спробуй переглянути варіанти ще раз за хвилину.",
+            )
+            user_loading_status[chat_id] = False
+            return
             try:
                 listings_first = provider.search({**q, "max_pages": 1})
             except Exception as e:

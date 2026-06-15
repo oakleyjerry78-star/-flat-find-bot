@@ -462,7 +462,12 @@ def cache_command(message):
         mode = indexer.get("mode") or "-"
         parts.append(f"Зараз: {source} / {indexer.get('category') or '-'} / {indexer.get('city') or '-'} ({mode})")
     parts.append(f"Черга індексатора: {indexer.get('queue_size', 0)}")
+    parts.append(f"Активних задач: {indexer.get('active_jobs', 0)}")
     parts.append(f"Гарячих пошуків: {indexer.get('hot_jobs', 0)}")
+    parts.append(
+        f"Worker-и: {indexer.get('workers', 1)} | сторінок фон/пріоритет: "
+        f"{indexer.get('max_pages', '-')} / {indexer.get('hot_max_pages', '-')}"
+    )
     parts.append(f"Останнє збереження: {indexer.get('last_saved', 0)}")
     if indexer.get("last_stale") or indexer.get("last_purged"):
         parts.append(f"Прибрано старих: {indexer.get('last_stale', 0)} / очищено: {indexer.get('last_purged', 0)}")
