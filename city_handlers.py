@@ -1077,7 +1077,7 @@ def register_city_handlers(bot):
 
         # миттєво відповідаємо на callback (і більше не чіпаємо call.id)
         try:
-            safe_answer_callback(call, "🔍 Шукаю варіанти…", show_alert=False, cache_time=0)
+            safe_answer_callback(call, "Показую варіанти", show_alert=False, cache_time=0)
         except ApiTelegramException:
             pass
 
@@ -1087,18 +1087,16 @@ def register_city_handlers(bot):
         except Exception:
             pass
 
-        # показуємо спінер-повідомлення
-        loading_msg = None
-        try:
-            loading_msg = bot.send_message(chat_id, "⏳ Йде пошук квартир…")
-        except Exception:
-            pass
+        if user_listings.get(chat_id):
+            user_page[chat_id] = 0
+            send_listing(chat_id)
+            return
 
-        # запускаємо пошук у окремому потоці
+        loading_msg = safe_send_message(chat_id, "⏳ Готую перші варіанти…")
         threading.Thread(
             target=_do_search_and_send,
             args=(chat_id, loading_msg.message_id if loading_msg else None),
-            daemon=True
+            daemon=True,
         ).start()
 
     def _dedupe_cards(cards: list[dict]) -> list[dict]:
@@ -1479,7 +1477,7 @@ def register_city_handlers(bot):
             for listing in listings[start:end]:
                 try:
                     img_urls = listing.get("img_urls", []) or []
-                    collage = create_collage(img_urls[:6]) if img_urls else None # Можливо, фотки погано відображаються через ділення тут
+                    collage = None
 
                     caption = (
                         f"<b>{listing.get('title', 'Без назви')}</b>\n"

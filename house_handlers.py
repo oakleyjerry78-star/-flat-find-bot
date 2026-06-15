@@ -999,7 +999,7 @@ def register_house_handlers(bot):
         print(f"[DEBUG] HOUSE_SHOW_RESULTS pressed | chat_id={chat_id}")
 
         try:
-            bot.answer_callback_query(call.id, "🔍 Шукаю варіанти будинків…", cache_time=0, show_alert=False)
+            bot.answer_callback_query(call.id, "Показую варіанти", cache_time=0, show_alert=False)
         except Exception as e:
             print("[DEBUG] answer_callback_query error:", e)
 
@@ -1008,9 +1008,14 @@ def register_house_handlers(bot):
         except Exception as e:
             print("[DEBUG] edit_message_reply_markup error:", e)
 
+        if user_listings.get(chat_id):
+            user_page[chat_id] = 0
+            send_house_listing(chat_id)
+            return
+
         loading_msg = None
         try:
-            loading_msg = bot.send_message(chat_id, "⏳ Йде пошук будинків…")
+            loading_msg = bot.send_message(chat_id, "⏳ Готую перші варіанти…")
         except Exception as e:
             print("[DEBUG] send loading msg error:", e)
 
@@ -1441,7 +1446,7 @@ def register_house_handlers(bot):
                     card_caption = f"🏷 {title}\n💵 {price}\n\n{caption_text}"
 
                     img_urls = listing.get("img_urls", []) or []
-                    collage = create_collage(img_urls[:4]) if img_urls else None
+                    collage = None
 
                     markup = types.InlineKeyboardMarkup()
                     link = listing.get("link") or ""

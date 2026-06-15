@@ -725,7 +725,7 @@ def register_rooms_handlers(bot):
         current_category[chat_id] = "room"
         print(f"[ROOM_BTN] click chat_id={chat_id}")
         try:
-            bot.answer_callback_query(call.id, "🔍 Шукаю кімнати…", cache_time=0, show_alert=False)
+            bot.answer_callback_query(call.id, "Показую варіанти", cache_time=0, show_alert=False)
         except Exception as e:
             print(f"[ROOM_BTN] answer_callback_query error: {e}")
         try:
@@ -739,6 +739,10 @@ def register_rooms_handlers(bot):
               f"districts={user_selected_districts.get(chat_id)} floors={user_selected_floors.get(chat_id)} "
               
               f"budget={user_budget_min.get(chat_id)}..{user_budget_max.get(chat_id)}")
+
+        if user_listings.get(chat_id):
+            send_listing(chat_id)
+            return
 
         run_category_search(chat_id, force_category="room")
 
@@ -996,7 +1000,7 @@ def register_rooms_handlers(bot):
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton("🔗 Переглянути", url=listing.get('link', '')))
                 imgs = listing.get("img_urls") or []
-                collage = create_collage(imgs[:4]) if imgs else None
+                collage = None
                 if collage:
                     bio = BytesIO();
                     collage.save(bio, format="JPEG", quality=85);
