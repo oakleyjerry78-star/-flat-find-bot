@@ -11,9 +11,10 @@ import time, requests
 from typing import Dict, List
 from search_runner import build_query_from_state_for_olx
 from gsheets import get_sub_info
-from listing_cache import query_cards
+from listing_cache import query_cards, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
+from background_indexer import enqueue_index_job
 from media_utils import edit_step_photo, send_step_photo
 
 
@@ -31,6 +32,7 @@ sent_messages = {}  # {chat_id: [message_id1, message_id2, ...]}
 user_last_messages = {}  # {chat_id: [msg_id1, msg_id2, ...]}
 user_loading_status = {}  # {chat_id: bool}
 user_total_expected = {}  # {chat_id: int}
+user_waiting_results = {}  # chat_id -> bool; user pressed "show results" while prefetch is running
 from state import current_category  # {chat_id: str}
 user_prefs = {}  # {chat_id: {"allows_pets": bool, "pet_types": list[str]}}
 page_msg_ids: Dict[int, Dict[int, List[int]]] = {}  # chat_id -> {page_index -> [message_ids]}
@@ -810,6 +812,109 @@ def register_city_handlers(bot):
                 browser.close()
 
 
+    def quick_count_and_cards_playwright(provider, query: dict, timeout_ms: int = 7000) -> tuple[int | None, list]:
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout  # noqa
+        except Exception:
+            return None, []
+
+        import re
+
+        def _only_digits(s: str) -> int | None:
+            try:
+                return int(re.sub(r"[^\d]", "", s or ""))
+            except Exception:
+                return None
+
+        def _parse_count(page) -> int | None:
+            try:
+                el = page.locator("span[data-testid='total-count']").first
+                n = _only_digits(el.text_content(timeout=1800) or "")
+                if n:
+                    return n
+            except Exception:
+                pass
+            try:
+                body = (page.evaluate("() => document.body.innerText") or "").lower()
+                m = re.search(r"ми\s+знайшли\s+([\d\s]+)", body)
+                if m:
+                    n = _only_digits(m.group(1))
+                    if n:
+                        return n
+            except Exception:
+                pass
+            try:
+                hrefs = page.evaluate("""
+                    () => Array.from(document.querySelectorAll("a[href*='&page='], a[href*='?page=']"))
+                                .map(a => a.getAttribute('href') || '')
+                """)
+            except Exception:
+                hrefs = []
+            nums = []
+            for h in hrefs:
+                for m in re.findall(r"[?&]page=(\d+)", h or ""):
+                    try:
+                        nums.append(int(m))
+                    except Exception:
+                        pass
+            return max(1, max(nums) if nums else 1) * 20
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                ctx = browser.new_context(
+                    locale="uk-UA",
+                    viewport={"width": 1366, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                )
+                ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                page = ctx.new_page()
+                page.set_default_timeout(timeout_ms)
+                page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
+                url = provider.build_url(query, page=1)
+                page.goto(url, timeout=timeout_ms + 2000, wait_until="domcontentloaded")
+
+                for sel in (
+                    "[data-testid='cookies-popup-accept-all']",
+                    "[data-testid='cookiesbar-accept']",
+                    "#onetrust-accept-btn-handler",
+                    "button:has-text('Прийняти все')",
+                    "button:has-text('Погоджуюсь')",
+                    "button:has-text('Accept all')",
+                ):
+                    try:
+                        page.locator(sel).first.click(timeout=700)
+                        page.wait_for_timeout(100)
+                        break
+                    except Exception:
+                        pass
+
+                for _ in range(2):
+                    try:
+                        page.evaluate("() => window.scrollBy(0, 1400)")
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(180)
+
+                count = _parse_count(page)
+                extractor = getattr(provider, "_extract_listings_from_page", None)
+                cards = extractor(page) if callable(extractor) else []
+                return count, cards or []
+            except PWTimeout:
+                return None, []
+            except Exception as e:
+                print("[quick_count_and_cards][error]", e)
+                return None, []
+            finally:
+                browser.close()
+
+
 
     @bot.callback_query_handler(func=lambda call: call.data == "back_to_budget")
     def back_to_budget(call):
@@ -820,17 +925,19 @@ def register_city_handlers(bot):
         chat_id = call.message.chat.id
 
         def _runner():
+            q_olx = {}
+            category = current_category.get(chat_id, "apartment")
+            city = user_selected_city.get(chat_id)
+            districts = user_selected_districts.get(chat_id, [])
+            combined_count = None
             try:
                 # --- 1) Стан ---
-                city = user_selected_city.get(chat_id)
                 city_slug = city_url_slug_map.get(city, "")
-                districts = user_selected_districts.get(chat_id, [])
                 floors = user_selected_floors.get(chat_id, [])
                 area_label = user_selected_area.get(chat_id)
                 rooms_label = user_selected_rooms.get(chat_id, [])
                 price_min = user_budget_min.get(chat_id)
                 price_max = user_budget_max.get(chat_id)
-                category = current_category.get(chat_id, "apartment")
 
                 # --- 2) OLX: q + нормалізація pets ---
                 q_olx = build_query_from_state_for_olx(
@@ -860,10 +967,23 @@ def register_city_handlers(bot):
                 else:
                     q_olx.pop("pets_filter", None)
 
+                enqueue_index_job(category, city)
+                cached = _query_cached_cards_fast(category, city, districts, q_olx, limit=100)
+                if cached:
+                    user_listings[chat_id] = cached
+                    user_page[chat_id] = 0
+
                 olx_provider = get_olx_provider(category)
                 print("[OLX][provider]", olx_provider.__class__.__name__)
                 print("[OLX] First OLX URL:", olx_provider.build_url(q_olx, page=1))
-                olx_count = quick_count_playwright(olx_provider, q_olx, timeout_ms=8000)
+                olx_count, first_items = quick_count_and_cards_playwright(olx_provider, q_olx, timeout_ms=7000)
+                if first_items:
+                    try:
+                        upsert_listings(category, city, first_items)
+                    except Exception as e:
+                        print("[quick_count cache upsert][error]", e)
+                    user_listings[chat_id] = _dedupe_cards([_to_bot_card(item) for item in first_items])
+                    user_page[chat_id] = 0
                 print(f"[OLX] Count = {olx_count}")
 
 
@@ -885,6 +1005,12 @@ def register_city_handlers(bot):
                     safe_delete_message(chat_id, loading_msg_id)
 
             show_final_summary(chat_id, count=combined_count if isinstance(combined_count, int) else None)
+            if not user_listings.get(chat_id):
+                threading.Thread(
+                    target=_prefetch_first_results,
+                    args=(chat_id, q_olx, category, city, districts),
+                    daemon=True,
+                ).start()
 
         threading.Thread(target=_runner, daemon=True).start()
 
@@ -1071,6 +1197,59 @@ def register_city_handlers(bot):
 
         return wrapper
 
+    def _query_cached_cards_fast(category, city, districts, q_olx, limit=100):
+        cached = query_cards(
+            category=category,
+            city=city,
+            districts=districts,
+            price_from=q_olx.get("price_from"),
+            price_to=q_olx.get("price_to"),
+            limit=limit,
+        )
+        if not cached and districts:
+            cached = query_cards(
+                category=category,
+                city=city,
+                districts=[],
+                price_from=q_olx.get("price_from"),
+                price_to=q_olx.get("price_to"),
+                limit=limit,
+            )
+        return cached
+
+    def _prefetch_first_results(chat_id: int, q_olx: dict, category: str, city: str, districts: list):
+        if user_listings.get(chat_id):
+            return
+        user_loading_status[chat_id] = True
+        try:
+            cached = _query_cached_cards_fast(category, city, districts, q_olx, limit=100)
+            if cached:
+                user_listings[chat_id] = cached
+            else:
+                provider = get_olx_provider(category)
+                _, items = quick_count_and_cards_playwright(provider, {**q_olx, "max_pages": 1}, timeout_ms=7000)
+                if items:
+                    try:
+                        upsert_listings(category, city, items)
+                    except Exception as e:
+                        print("[prefetch cache upsert][error]", e)
+                user_listings[chat_id] = _dedupe_cards([_to_bot_card(item) for item in items])
+            user_page[chat_id] = 0
+            if user_waiting_results.pop(chat_id, False):
+                if user_listings.get(chat_id):
+                    send_listing(chat_id)
+                else:
+                    safe_send_message(
+                        chat_id,
+                        "⏳ OLX довго віддає самі оголошення. Спробуй натиснути перегляд ще раз або оновити параметри.",
+                    )
+        except Exception as e:
+            print(f"[PREFETCH_RESULTS][ERROR] {e}")
+            if user_waiting_results.pop(chat_id, False):
+                safe_send_message(chat_id, "❌ Не вдалося швидко підготувати варіанти. Спробуй оновити параметри.")
+        finally:
+            user_loading_status[chat_id] = False
+
     @bot.callback_query_handler(func=lambda c: c.data == "show_results")
     def show_results(call):
         chat_id = call.message.chat.id
@@ -1090,6 +1269,11 @@ def register_city_handlers(bot):
         if user_listings.get(chat_id):
             user_page[chat_id] = 0
             send_listing(chat_id)
+            return
+
+        user_waiting_results[chat_id] = True
+        if user_loading_status.get(chat_id):
+            safe_send_message(chat_id, "⏳ Перші варіанти вже готуються. Зараз покажу їх тут.")
             return
 
         loading_msg = safe_send_message(chat_id, "⏳ Готую перші варіанти…")
@@ -1275,19 +1459,13 @@ def register_city_handlers(bot):
             else:
                 q_olx.pop("pets_filter", None)
 
+            enqueue_index_job(category, city)
 
 
             # збережемо для фону
             user_last_queries[chat_id] = {"olx": q_olx}
 
-            cached = query_cards(
-                category=category,
-                city=city,
-                districts=districts,
-                price_from=q_olx.get("price_from"),
-                price_to=q_olx.get("price_to"),
-                limit=100,
-            )
+            cached = _query_cached_cards_fast(category, city, districts, q_olx, limit=100)
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
@@ -1299,7 +1477,12 @@ def register_city_handlers(bot):
             olx = get_olx_provider(category)
 
 
-            first_olx = olx.search({**q_olx, "max_pages": 5}) or []
+            _, first_olx = quick_count_and_cards_playwright(olx, {**q_olx, "max_pages": 1}, timeout_ms=7000)
+            if first_olx:
+                try:
+                    upsert_listings(category, city, first_olx)
+                except Exception as e:
+                    print("[search cache upsert][error]", e)
 
 
             olx_cards_all = [_to_bot_card(it) for it in first_olx]

@@ -9,9 +9,10 @@ from io import BytesIO
 import requests
 from PIL import Image
 from providers.olx_provider import get_olx_provider
-from listing_cache import query_cards
+from listing_cache import query_cards, upsert_listings
 from city_menu import build_city_markup, city_caption
-from app_config import BRAND_NAME
+from app_config import BRAND_NAME, CITY_SLUGS
+from background_indexer import enqueue_index_job
 from gsheets import get_sub_info
 from media_utils import edit_step_photo, send_step_photo
 from playwright_utils import safe_scroll as _safe_scroll
@@ -37,14 +38,7 @@ user_selected_rooms = {}
 user_selected_area = {}
 from state import current_category  # {chat_id: str}
 
-city_url_slug_map = {
-    "Київ": "kiev",
-    "Одеса": "odessa",
-    "Львів": "lvov",
-    "Дніпро": "dnepr",
-    "Івано-Франківськ": "ivano-frankovsk",
-    "Луцьк": "lutsk",
-}
+city_url_slug_map = CITY_SLUGS
 
 # місто -> область так, як показує OLX у шапці результатів
 OBLAST_BY_CITY = {
@@ -840,6 +834,7 @@ def register_house_handlers(bot):
                 q_olx.pop("pet_types", None)
 
                 _debug_dump("[OLX][HOUSE] q", q_olx)
+                enqueue_index_job(category, city)
                 olx_provider = get_olx_provider(category)
                 olx_count = quick_count_playwright(olx_provider, q_olx, timeout_ms=8000)
 
@@ -1118,7 +1113,13 @@ def register_house_handlers(bot):
 
             # ---- OLX пачками
             if olx_pages and len(merged) < target_total:
-                for it in (olx.search({**q_olx, "max_pages": olx_pages}) or []):
+                more_items = olx.search({**q_olx, "max_pages": olx_pages}) or []
+                if more_items:
+                    try:
+                        upsert_listings(category, q_olx.get("city") or user_selected_city.get(chat_id), more_items)
+                    except Exception as e:
+                        print("[HOUSE background cache upsert][error]", e)
+                for it in more_items:
                     if (isinstance(remaining_olx, int) and remaining_olx <= 0) or len(merged) >= target_total:
                         break
                     try:
@@ -1217,6 +1218,7 @@ def register_house_handlers(bot):
             q_olx["allows_pets"] = True if user_has_pet.get(chat_id) == "Має" else None
             q_olx.pop("pet_types", None)
 
+            enqueue_index_job(category, city)
 
 
             # Якщо обрані всі/жодного району — не передаємо districts
@@ -1238,6 +1240,15 @@ def register_house_handlers(bot):
                 price_to=q_olx.get("price_to"),
                 limit=100,
             )
+            if not cached and selected:
+                cached = query_cards(
+                    category=category,
+                    city=city,
+                    districts=[],
+                    price_from=q_olx.get("price_from"),
+                    price_to=q_olx.get("price_to"),
+                    limit=100,
+                )
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
@@ -1248,7 +1259,12 @@ def register_house_handlers(bot):
                     daemon=True,
                 ).start()
                 return
-            first_olx = olx.search({**q_olx, "max_pages": 5}) or []
+            first_olx = olx.search({**q_olx, "max_pages": 1}) or []
+            if first_olx:
+                try:
+                    upsert_listings(category, city, first_olx)
+                except Exception as e:
+                    print("[HOUSE cache upsert][error]", e)
 
 
             def _to_card(it, src):

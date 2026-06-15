@@ -459,7 +459,13 @@ def cache_command(message):
     ]
     if indexer.get("category") or indexer.get("city"):
         source = indexer.get("source") or "-"
-        parts.append(f"Зараз: {source} / {indexer.get('category') or '-'} / {indexer.get('city') or '-'}")
+        mode = indexer.get("mode") or "-"
+        parts.append(f"Зараз: {source} / {indexer.get('category') or '-'} / {indexer.get('city') or '-'} ({mode})")
+    parts.append(f"Черга індексатора: {indexer.get('queue_size', 0)}")
+    parts.append(f"Гарячих пошуків: {indexer.get('hot_jobs', 0)}")
+    parts.append(f"Останнє збереження: {indexer.get('last_saved', 0)}")
+    if indexer.get("last_stale") or indexer.get("last_purged"):
+        parts.append(f"Прибрано старих: {indexer.get('last_stale', 0)} / очищено: {indexer.get('last_purged', 0)}")
     if data.get("by_source"):
         parts.append("Джерела: " + ", ".join(f"{source}: {count}" for source, count in data["by_source"].items()))
     for category, count in (data.get("by_category") or {}).items():

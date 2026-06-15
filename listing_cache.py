@@ -130,6 +130,17 @@ def mark_stale_inactive(category: str, city: str, older_than_seconds: int = 8640
         return cur.rowcount or 0
 
 
+def purge_inactive(older_than_seconds: int = 604800) -> int:
+    init_db()
+    cutoff = int(time.time()) - older_than_seconds
+    with _LOCK, _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM listings WHERE active=0 AND last_seen<?",
+            (cutoff,),
+        )
+        return cur.rowcount or 0
+
+
 def query_cards(
     *,
     category: str,

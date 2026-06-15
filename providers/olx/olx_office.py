@@ -470,7 +470,7 @@ class OlxProviderOffice(Provider):
                 context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
                 page = context.new_page()
-                page.set_default_timeout(60000)
+                page.set_default_timeout(15000)
                 page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                 if debug:
                     page.set_viewport_size({"width": 1366, "height": 900})
@@ -495,18 +495,18 @@ class OlxProviderOffice(Provider):
                 url = self.build_url(q, page=1)
                 print("[OFFICE search] GOTO page 1:", url)
                 try:
-                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    page.goto(url, timeout=15000, wait_until="domcontentloaded")
                     accept_cookies(page)
                     try:
-                        page.wait_for_selector("[data-testid='listing-grid'], [data-cy='listing-grid']", timeout=8000)
+                        page.wait_for_selector("[data-testid='listing-grid'], [data-cy='listing-grid']", timeout=5000)
                     except Exception:
                         print("[OFFICE search] listing grid not immediately visible")
 
                     # Прокрутка, щоб підвантажились картки
                     prev = -1
-                    for _ in range(10):
+                    for _ in range(4):
                         _safe_scroll(page, 2000)
-                        page.wait_for_timeout(random.randint(500, 900))
+                        page.wait_for_timeout(random.randint(150, 300))
                         cur = page.locator(
                             "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                         ).count()
@@ -547,13 +547,13 @@ class OlxProviderOffice(Provider):
                         url = self.build_url(q, page=pg)
                         print("[OFFICE search] GOTO page", pg, ":", url)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
                             accept_cookies(page)
 
                             prev = -1
-                            for _ in range(8):
+                            for _ in range(3):
                                 _safe_scroll(page, 2000)
-                                page.wait_for_timeout(random.randint(500, 900))
+                                page.wait_for_timeout(random.randint(150, 300))
                                 cur = page.locator(
                                     "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                                 ).count()
@@ -616,14 +616,14 @@ class OlxProviderOffice(Provider):
                 try:
                     context = browser.new_context()
                     page = context.new_page()
-                    page.set_default_timeout(60000)
+                    page.set_default_timeout(15000)
                     page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                     for pg in range(1, int(relaxed.get("max_pages", 2)) + 1):
                         url = self.build_url(relaxed, page=pg)
                         print("[OFFICE fallback] GOTO page", pg, ":", url)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                            page.wait_for_timeout(random.randint(1000, 2000))
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                            page.wait_for_timeout(random.randint(300, 600))
                             batch = self._extract_listings_from_page(page)
                             print(f"[OFFICE fallback] page {pg}: {len(batch)}")
                             results2.extend(batch)

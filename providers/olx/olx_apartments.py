@@ -476,7 +476,7 @@ class OlxProviderapartments(Provider):
                 context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
                 page = context.new_page()
-                page.set_default_timeout(60000)
+                page.set_default_timeout(15000)
                 page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                 if debug:
                     page.set_viewport_size({"width": 1366, "height": 900})
@@ -484,7 +484,7 @@ class OlxProviderapartments(Provider):
                 # ===== 1) сторінка 1
                 url = self.build_url(q, page=1)
                 try:
-                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    page.goto(url, timeout=15000, wait_until="domcontentloaded")
                     accept_cookies(page)
 
                     # 👇 кадр після завантаження
@@ -492,9 +492,9 @@ class OlxProviderapartments(Provider):
 
                     # легкий lazy‑scroll
                     prev = -1
-                    for _ in range(10):
+                    for _ in range(4):
                         _safe_scroll(page, 2000)
-                        page.wait_for_timeout(random.randint(500, 900))
+                        page.wait_for_timeout(random.randint(150, 300))
                         cur = page.locator(
                             "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                         ).count()
@@ -535,16 +535,16 @@ class OlxProviderapartments(Provider):
                     for pg in range(2, total_pages + 1):
                         url = self.build_url(q, page=pg)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
                             accept_cookies(page)
 
                             # 👇 кадр після відкриття сторінки N
                             self._emit_image(page, f"Сторінка {pg}: {url}")
 
                             prev = -1
-                            for _ in range(8):
+                            for _ in range(3):
                                 _safe_scroll(page, 2000)
-                                page.wait_for_timeout(random.randint(500, 900))
+                                page.wait_for_timeout(random.randint(150, 300))
                                 cur = page.locator(
                                     "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                                 ).count()
@@ -580,13 +580,13 @@ class OlxProviderapartments(Provider):
                 try:
                     context = browser.new_context()
                     page = context.new_page()
-                    page.set_default_timeout(60000)
+                    page.set_default_timeout(15000)
                     page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                     for pg in range(1, int(relaxed.get("max_pages", 2)) + 1):
                         url = self.build_url(relaxed, page=pg)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                            page.wait_for_timeout(random.randint(1000, 2000))
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                            page.wait_for_timeout(random.randint(300, 600))
                             batch = self._extract_listings_from_page(page)
                             results2.extend(batch)
                         except PWTimeout:

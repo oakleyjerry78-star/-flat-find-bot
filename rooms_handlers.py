@@ -8,9 +8,10 @@ import requests
 from PIL import Image
 import re
 from providers.olx import get_olx_provider
-from listing_cache import query_cards
+from listing_cache import query_cards, upsert_listings
 from city_menu import build_city_markup, city_caption
 from app_config import BRAND_NAME
+from background_indexer import enqueue_index_job
 from gsheets import get_sub_info
 from media_utils import edit_step_photo, send_step_photo
 from playwright_utils import safe_scroll as _safe_scroll
@@ -593,6 +594,7 @@ def register_rooms_handlers(bot):
                     max_pages=1,
                 )
                 print("[ROOM/OLX] q_olx:", q_olx)
+                enqueue_index_job(category, city)
                 olx_provider = get_olx_provider(category)
                 try:
                     olx_url_debug = olx_provider.build_url(q_olx, 1)
@@ -809,12 +811,13 @@ def register_rooms_handlers(bot):
                 price_min=price_min,
                 price_max=price_max,
                 sort="newest",
-                max_pages=5
+                max_pages=1
             )
 
 
 
             print(f"[SEARCH] Запит q: {q}")
+            enqueue_index_job(category, city)
 
             provider = get_olx_provider(category)
             try:
@@ -832,6 +835,15 @@ def register_rooms_handlers(bot):
                 price_to=q.get("price_to"),
                 limit=100,
             )
+            if not cached and districts:
+                cached = query_cards(
+                    category=category,
+                    city=city,
+                    districts=[],
+                    price_from=q.get("price_from"),
+                    price_to=q.get("price_to"),
+                    limit=100,
+                )
             if cached:
                 user_listings[chat_id] = cached
                 user_page[chat_id] = 0
@@ -839,11 +851,16 @@ def register_rooms_handlers(bot):
                 send_listing(chat_id)
                 return
             try:
-                listings_first = provider.search({**q, "max_pages": 5})
+                listings_first = provider.search({**q, "max_pages": 1})
             except Exception as e:
                 print(f"[SEARCH] provider.search error: {e}")
                 raise
             print(f"[SEARCH] first_page_count={len(listings_first)}")
+            if listings_first:
+                try:
+                    upsert_listings(category, city, listings_first)
+                except Exception as e:
+                    print("[ROOM cache upsert][error]", e)
             print(f"[SEARCH] Знайдено на сторінці 1: {len(listings_first)} оголошень")
             cards_first = [_to_bot_card(it) for it in listings_first][:100]
             user_listings[chat_id] = cards_first
@@ -853,6 +870,11 @@ def register_rooms_handlers(bot):
             def background_parse(q_local, chat_id_local):
                 try:
                     more = provider.search({**q_local, "max_pages": 15})
+                    if more:
+                        try:
+                            upsert_listings(category, city, more)
+                        except Exception as e:
+                            print("[ROOM background cache upsert][error]", e)
                     print(f"[SEARCH] Фон: знайдено {len(more)} оголошень (всі сторінки)")
                     more_cards = [_to_bot_card(it) for it in more]
                     base = user_listings.get(chat_id_local, []) or []

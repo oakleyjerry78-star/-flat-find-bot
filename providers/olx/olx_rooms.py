@@ -466,7 +466,7 @@ class OlxProviderRooms(Provider):
                 # <<< PATCH
 
                 page = context.new_page()
-                page.set_default_timeout(60000)
+                page.set_default_timeout(15000)
                 page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                 if debug:
                     page.set_viewport_size({"width": 1366, "height": 900})
@@ -493,12 +493,12 @@ class OlxProviderRooms(Provider):
                 # ===== 1) Перша сторінка
                 url = self.build_url(q, page=1)
                 try:
-                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    page.goto(url, timeout=15000, wait_until="domcontentloaded")
 
                     # >>> PATCH: cookies + чек контейнера + лінива догрузка
                     accept_cookies(page)
                     try:
-                        page.wait_for_selector("[data-testid='listing-grid'], [data-cy='listing-grid']", timeout=8000)
+                        page.wait_for_selector("[data-testid='listing-grid'], [data-cy='listing-grid']", timeout=5000)
                     except:
                         pass
 
@@ -509,9 +509,9 @@ class OlxProviderRooms(Provider):
                         pass
 
                     prev = -1
-                    for _ in range(10):
+                    for _ in range(4):
                         _safe_scroll(page, 2000)
-                        page.wait_for_timeout(random.randint(500, 900))
+                        page.wait_for_timeout(random.randint(150, 300))
                         cur = page.locator(
                             "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                         ).count()
@@ -552,9 +552,9 @@ class OlxProviderRooms(Provider):
                     print(f"[OLX] pagination: detected {detected}, using {total_pages} pages  |  {url}")
 
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(random.randint(800, 1400))
+                    page.wait_for_timeout(random.randint(250, 450))
                     batch = self._extract_listings_from_page(page)
-                    page.wait_for_timeout(random.randint(1000, 2500))
+                    page.wait_for_timeout(random.randint(400, 800))
                     batch = self._extract_listings_from_page(page)
 
                     print(f"[OLX] page 1: {len(batch)} cards  |  {url}")
@@ -571,20 +571,20 @@ class OlxProviderRooms(Provider):
                     for pg in range(2, total_pages + 1):
                         url = self.build_url(q, page=pg)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
 
                             # >>> PATCH: cookies + чек + скрол для наступних сторінок
                             accept_cookies(page)
                             try:
                                 page.wait_for_selector("[data-testid='listing-grid'], [data-cy='listing-grid']",
-                                                       timeout=8000)
+                                                       timeout=5000)
                             except:
                                 pass
 
                             prev = -1
-                            for _ in range(8):
+                            for _ in range(3):
                                 _safe_scroll(page, 2000)
-                                page.wait_for_timeout(random.randint(500, 900))
+                                page.wait_for_timeout(random.randint(150, 300))
                                 cur = page.locator(
                                     "div[data-cy='l-card'], [data-testid='ad-card'], article[data-testid='l-card']"
                                 ).count()
@@ -594,9 +594,9 @@ class OlxProviderRooms(Provider):
                             # <<< PATCH
 
                             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                            page.wait_for_timeout(random.randint(800, 1400))
+                            page.wait_for_timeout(random.randint(250, 450))
                             batch = self._extract_listings_from_page(page)
-                            page.wait_for_timeout(random.randint(1000, 2500))
+                            page.wait_for_timeout(random.randint(400, 800))
                             batch = self._extract_listings_from_page(page)
 
                             print(f"[OLX] page {pg}: {len(batch)} cards  |  {url}")
@@ -656,13 +656,13 @@ class OlxProviderRooms(Provider):
                 try:
                     context = browser.new_context()
                     page = context.new_page()
-                    page.set_default_timeout(60000)
+                    page.set_default_timeout(15000)
                     page.set_extra_http_headers({"Accept-Language": "uk-UA,uk;q=0.9"})
                     for pg in range(1, int(relaxed.get("max_pages", 2)) + 1):
                         url = self.build_url(relaxed, page=pg)
                         try:
-                            page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                            page.wait_for_timeout(random.randint(1000, 2000))
+                            page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                            page.wait_for_timeout(random.randint(300, 600))
                             batch = self._extract_listings_from_page(page)
                             print(f"[OLX][fallback] page {pg}: {len(batch)} cards  |  {url}")
                             if len(batch) == 0:
