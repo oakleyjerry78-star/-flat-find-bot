@@ -113,6 +113,15 @@ def _to_bool(v) -> bool:
         return v
     return str(v).strip().upper() in ("TRUE", "1", "YES", "Y", "T")
 
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return default
+
 LOCAL_TZ_NAME = os.getenv("TZ", "Europe/Kyiv")
 
 def _resolve_tz():
@@ -152,6 +161,15 @@ def _now_serial_for_sheets() -> float:
     dt_local_naive = dt_local.replace(tzinfo=None)  # робимо naive локальний
     epoch_naive = datetime(1899, 12, 30)
     return (dt_local_naive - epoch_naive).total_seconds() / 86400.0
+
+
+def _subscription_days(period_text: str = "1m") -> int:
+    period = str(period_text or "1m").strip().lower()
+    if period in {"1m", "month", "monthly", "місяць", "1 місяць"}:
+        return 30
+    if period.endswith("d") and period[:-1].isdigit():
+        return int(period[:-1])
+    return 30
 
 def _set_number_a1(ws, a1: str, value: float) -> None:
     """
@@ -207,7 +225,7 @@ def _find_row_by_user_id(ws, user_id: str) -> int | None:
 
 # ================= USERS =================
 # users: № | id | username | ref_code | ref_from | registered_at |
-#         subscribed | subscribed_at | sub_period | sub_price | payment_id | notes
+#         subscribed | subscribed_at | sub_expires_at | sub_period | sub_price | payment_id
 def ensure_user(user_id: str, username: str = "") -> None:
     ws = _ws(USERS_WS)
     ids = ws.col_values(2)[1:]  # column B = id
@@ -248,13 +266,24 @@ def a1(row: int, col: int) -> str:
 
 
 def get_sub_info(user_id: str) -> str | None:
-    """Повертає значення з колонки G (subscribed) для user_id, або None."""
+    """Повертає активність підписки з урахуванням дати завершення в колонці I."""
     ws = _ws(USERS_WS)
     data = ws.get_all_records()
     for i, row in enumerate(data, start=2):
         if str(row["id"]) == str(user_id):
-            val = ws.get(f"G{i}")  # G = subscribed
-            return val[0][0] if val and val[0] else None
+            subscribed = row.get("subscribed", "")
+            if not _to_bool(subscribed):
+                return "FALSE"
+
+            expires_at = _to_float(row.get("sub_expires_at") or row.get("unsubscribed_at") or "")
+            if not expires_at:
+                raw_expires = ws.get(f"I{i}")
+                expires_at = _to_float(raw_expires[0][0] if raw_expires and raw_expires[0] else "")
+            if expires_at and expires_at < _now_serial_for_sheets():
+                ws.update_acell(f"G{i}", "FALSE")
+                return "FALSE"
+
+            return "TRUE"
     return None
 
 
@@ -280,6 +309,10 @@ def set_subscription(user_id: str, active: bool, price_uah: int = 0,
     # G..L = 7..12
     cG, cH, cI, cJ, cK, cL = 7, 8, 9, 10, 11, 12
     now_serial = _now_serial_for_sheets()
+    raw_expires = ws.get(f"I{row_idx}")
+    current_expires = _to_float(raw_expires[0][0] if raw_expires and raw_expires[0] else "")
+    starts_from = max(now_serial, current_expires)
+    expires_serial = starts_from + _subscription_days(period_text)
 
     if active:
         rng = f"{_a1(row_idx, cG)}:{_a1(row_idx, cL)}"
@@ -287,11 +320,13 @@ def set_subscription(user_id: str, active: bool, price_uah: int = 0,
             "valueInputOption": "RAW",
             "data": [{
                 "range": rng,
-                "values": [["TRUE", now_serial, "", period_text, price_uah, payment_id]]
+                "values": [["TRUE", now_serial, expires_serial, period_text, price_uah, payment_id]]
             }]
         })
         # гарантуємо, що H — саме numberValue
         _set_number_a1(ws, _a1(row_idx, cH), now_serial)
+        _set_number_a1(ws, _a1(row_idx, cI), expires_serial)
+        ws.update_acell(f"M{row_idx}", "FALSE")  # sub_cancelled
     else:
         ws.spreadsheet.values_batch_update({
             "valueInputOption": "RAW",
@@ -303,6 +338,15 @@ def set_subscription(user_id: str, active: bool, price_uah: int = 0,
         })
         # гарантуємо, що I — саме numberValue
         _set_number_a1(ws, _a1(row_idx, cI), now_serial)
+
+
+def cancel_subscription_renewal(user_id: str) -> None:
+    """Скасовує автопродовження, але не забирає доступ до кінця оплаченого періоду."""
+    ws = _ws(USERS_WS)
+    row_idx = _find_row_by_user_id(ws, str(user_id))
+    if not row_idx:
+        return
+    ws.update_acell(f"M{row_idx}", "TRUE")  # sub_cancelled
 
 
 

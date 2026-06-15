@@ -29,9 +29,13 @@ WAYFORPAY_PRODUCT_NAME=Підписка Flat Find на 1 місяць
 WAYFORPAY_PRODUCT_PRICE=439.99
 WAYFORPAY_RETURN_URL=https://t.me/flatfind_estate_bot
 WAYFORPAY_SERVICE_URL=https://flat-find-bot-production.up.railway.app/wayforpay/callback
+WAYFORPAY_RECURRING_ENABLED=1
+WAYFORPAY_REGULAR_MODE=monthly
 ```
 
 У Railway Public Networking використовуй порт `8080`.
+
+Після успішного платежу доступ активується на 30 днів. Повторний успішний callback від WayForPay продовжує доступ ще на 30 днів. Кнопка `Скасувати підписку` не забирає доступ одразу: бот залишає його до кінця вже оплаченого періоду.
 
 ## Стартова картка Telegram
 

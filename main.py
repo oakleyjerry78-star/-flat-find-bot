@@ -43,7 +43,7 @@ from app_config import (
 from background_indexer import get_indexer_status, start_background_indexer
 from listing_cache import stats as cache_stats
 from gsheets import (
-    ensure_user, set_ref_from, set_subscription,
+    cancel_subscription_renewal, ensure_user, set_ref_from, set_subscription,
     upsert_ref_stats, get_ref_count, get_paid_count, get_sub_info, get_ref_summary,
     log_payout, mark_payout_paid,  # якщо плануєш логати виплати
 )
@@ -173,6 +173,16 @@ def _payment_form(order_reference: str) -> str:
         "returnUrl": return_url,
         "language": "UA",
     }
+    if _env("WAYFORPAY_RECURRING_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        next_payment_ts = int(time.time()) + 30 * 24 * 60 * 60
+        fields.update({
+            "regularOn": "1",
+            "regularMode": _env("WAYFORPAY_REGULAR_MODE", "monthly"),
+            "dateNext": time.strftime("%d.%m.%Y", time.localtime(next_payment_ts)),
+        })
+        regular_count = _env("WAYFORPAY_REGULAR_COUNT")
+        if regular_count:
+            fields["regularCount"] = regular_count
     inputs = "\n".join(
         f'<input type="hidden" name="{html.escape(key)}" value="{html.escape(str(value))}">'
         for key, value in fields.items()
@@ -668,8 +678,7 @@ def subscribe_month(call):
 @bot.callback_query_handler(func=lambda c: c.data == "cancel_subscription")
 def cancel_subscription(call):
     uid = str(call.from_user.id)
-    user_sub[call.from_user.id] = False
-    set_subscription(uid, active=False)  # оновлюємо users sheet
+    cancel_subscription_renewal(uid)
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -683,8 +692,8 @@ def cancel_subscription(call):
         call.message.chat.id,
         "subscription_cancel.png",
         "❌ <b>Підписку скасовано</b>\n\n"
-        "🔓 Доступ до преміум-функцій збережеться до завершення поточного оплаченного періоду.\n"
-        "Після цього функції стануть недоступними.\n\n"
+        "🔓 Доступ до преміум-функцій збережеться до завершення поточного оплаченого періоду.\n"
+        "Після завершення місяця бот автоматично забере платний доступ.\n\n"
         "Будемо раді бачити вас знову 💖",
         parse_mode="HTML",
         reply_markup=kb
