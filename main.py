@@ -323,7 +323,7 @@ try:
         types.BotCommand("start", "Головне меню"),
         types.BotCommand("menu", "Показати меню"),
         types.BotCommand("rent", "Пошук оренди"),
-        types.BotCommand("buy", "Купівля без комісії"),
+        types.BotCommand("buy", "Купівля - в розробці"),
         types.BotCommand("subscribe", "Підписка"),
         types.BotCommand("support", "Зв'язок"),
         types.BotCommand("about", "Про сервіс"),
@@ -350,7 +350,7 @@ def get_main_menu():
 
     row1 = [
         types.KeyboardButton("Оренда без комісії 🏢"),
-        types.KeyboardButton("Купівля без комісії 🏠")
+        types.KeyboardButton("Купівля - в розробці 🏗")
     ]
     row2 = [
         types.KeyboardButton("Підписка 🔒"),
@@ -427,7 +427,7 @@ def rent_command(message):
 @bot.message_handler(commands=["buy"])
 @safe_handler
 def buy_command(message):
-    handle_buy_realty(message)
+    send_buy_in_development(message.chat.id)
 
 
 @bot.message_handler(commands=["subscribe"])
@@ -490,7 +490,7 @@ def help_command(message):
         "Команди:\n"
         "/start - головне меню\n"
         "/rent - пошук оренди\n"
-        "/buy - купівля без комісії\n"
+        "/buy - купівля в розробці\n"
         "/subscribe - підписка\n"
         "/support - зв'язок\n"
         "/about - про сервіс\n"
@@ -688,7 +688,7 @@ def subscribe_month(call):
         f"💼 <b>Підписка {BRAND_NAME} — {price_text} грн/місяць</b>\n\n"
         "🔹 <b>У доступі:</b>\n"
         "✅ Оренда квартир, будинків, кімнат та офісів\n"
-        "✅ Купівля квартир і будинків без комісії\n"
+        "🏗 Купівля квартир і будинків - в розробці\n"
         "✅ Місто, райони, бюджет, площа й додаткові параметри\n"
         "✅ Нові оголошення у зручному форматі карток\n\n"
         "Натисніть кнопку нижче, щоб перейти до оплати. Після успішної оплати доступ активується автоматично.",
@@ -908,12 +908,12 @@ def handle_about_us(message):
         "Це бот для швидкого пошуку нерухомості без комісії та зайвих посередницьких кіл.\n\n"
         "📍 *Що є всередині:*\n"
         "🏡 Оренда квартир, будинків, кімнат та офісів\n"
-        "🔑 Купівля квартир і будинків без комісії\n"
+        "🏗 Купівля квартир і будинків - в розробці\n"
         "🧭 Фільтри за містом, районом, бюджетом і параметрами\n"
         "📌 Добірки актуальних оголошень у зрозумілому форматі\n\n"
         "🔒 *Підписка відкриває:*\n"
         "✅ Повний доступ до добірок після 3 безкоштовних варіантів\n"
-        "✅ Оренду, купівлю, фільтри та актуальні картки\n"
+        "✅ Оренду, фільтри та актуальні картки\n"
         "✅ Нові оголошення у зручному форматі без зайвих дзвінків\n\n"
         "Мета проста: менше ручного перегляду, більше релевантних варіантів.\n\n"
         f"📩 Підтримка: {SUPPORT_USERNAME}"
@@ -944,75 +944,43 @@ def get_buy_realty_menu():
 
 def get_buy_realty_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(
-        types.KeyboardButton("Купити квартиру 🔑"),
-        types.KeyboardButton("Купити будинок 🏡")
-    )
-    kb.add(types.KeyboardButton("Комерційна нерухомість 🏬"))
+    kb.add(types.KeyboardButton("Купівля - в розробці 🏗"))
     kb.add(types.KeyboardButton("🔙 Назад"))
     return kb
 
 
-@bot.message_handler(func=lambda message: message.text == "Купівля без комісії 🏠")
+def send_buy_in_development(chat_id):
+    bot.send_message(
+        chat_id,
+        "🏗 Купівля житла зараз в розробці.\n\n"
+        "Ми тимчасово прибрали цей розділ з активного пошуку, але всі дані та сценарії для купівлі залишились у боті. "
+        "Коли розділ буде готовий, його можна буде швидко повернути.\n\n"
+        "Поки що доступна оренда без комісії.",
+        reply_markup=get_main_menu()
+    )
+
+
+@bot.message_handler(func=lambda message: message.text in {"Купівля без комісії 🏠", "Купівля - в розробці 🏗"})
 @safe_handler
 def handle_buy_realty(message):
-    text = "Оберіть, що хочете купити без комісії. Після цього бот відкриє фільтри пошуку."
-
-    safe_send(
-        bot, "send_message",
-        message.chat.id,
-        text,
-        parse_mode="Markdown",
-        reply_markup=get_buy_realty_menu()
-    )
+    send_buy_in_development(message.chat.id)
 
 
 # ---- купівля квартир та будинків через той самий пошуковий сценарій ----
 @bot.message_handler(func=lambda message: message.text == "Купити квартиру 🔑")
 @safe_handler
 def handle_buy_flat(message):
-    begin_category_session(bot, message.chat.id, "apartment_buy")
-    send_step_photo(
-        bot,
-        message.chat.id,
-        "city.png",
-        city_caption("apartment_buy"),
-        reply_markup=build_city_markup("apartment_buy"),
-        parse_mode="Markdown"
-    )
-    bot.send_message(
-        message.chat.id,
-        TAGLINE,
-        reply_markup=ReplyKeyboardRemove()
-    )
+    send_buy_in_development(message.chat.id)
 
 @bot.message_handler(func=lambda message: message.text == "Купити будинок 🏡")
 @safe_handler
 def handle_buy_house(message):
-    begin_category_session(bot, message.chat.id, "house_buy")
-    send_step_photo(
-        bot,
-        message.chat.id,
-        "city.png",
-        city_caption("house_buy"),
-        reply_markup=build_city_markup("house_buy"),
-        parse_mode="Markdown"
-    )
-    bot.send_message(
-        message.chat.id,
-        TAGLINE,
-        reply_markup=ReplyKeyboardRemove()
-    )
+    send_buy_in_development(message.chat.id)
 
 @bot.message_handler(func=lambda message: message.text == "Комерційна нерухомість 🏬")
 @safe_handler
 def handle_buy_commercial(message):
-    bot.send_message(
-        message.chat.id,
-        "🏬 Купівлю комерційної нерухомості винесено в окрему чергу. Зараз доступні квартири та будинки без комісії.",
-        parse_mode="Markdown",
-        reply_markup=get_buy_realty_menu()
-    )
+    send_buy_in_development(message.chat.id)
 
 @bot.message_handler(func=lambda m: m.text == "Договори оренди 📄")
 def rent_contract_handler(message):
